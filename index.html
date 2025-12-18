@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <link href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://unpkg.com/maplibre-gl@3/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@3"></script>
+    <script src="https://unpkg.com/three@r128/build/three.min.js"></script>
+    <script src="https://unpkg.com/maplibre-gl-three@1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"></script>
+
+    <style>
+      :root {
+        --bg: #fdf6f0;
+        --text: #6d4c41;
+        --btn-border: #8d6e63;
+      }
+      html, body {
+        width: 100%; height: 100%; margin: 0; padding: 0;
+        overflow: hidden; font-family: 'M PLUS Rounded 1c', sans-serif;
+        background-color: var(--bg); color: var(--text);
+      }
+      /* ヘッダー */
+      header {
+        position: absolute; top: 15px; left: 20px; z-index: 10;
+        pointer-events: none;
+      }
+      h1 {
+        margin: 0; font-size: 24px; background: rgba(255,255,255,0.9);
+        padding: 10px 20px; border-radius: 20px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1); pointer-events: auto;
+      }
+      .legend {
+        font-size: 11px; background: rgba(255,255,255,0.95);
+        padding: 8px 12px; border-radius: 10px; margin-top: 5px;
+        pointer-events: auto; display: inline-block;
+      }
+      .legend-item { display: inline-flex; align-items: center; margin-right: 10px; }
+      .color-box { width: 12px; height: 12px; margin-right: 4px; border-radius: 3px; }
+
+      /* ボタン */
+      .controls {
+        position: absolute; bottom: 30px; left: 50%;
+        transform: translateX(-50%); z-index: 10;
+        background: rgba(255,255,255,0.9); padding: 10px 20px;
+        border-radius: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+        width: 90%; max-width: 600px;
+      }
+      button {
+        background: #fff; border: 1px solid var(--btn-border);
+        color: var(--text); padding: 6px 14px; border-radius: 15px;
+        font-family: 'M PLUS Rounded 1c'; font-weight: bold; cursor: pointer;
+      }
+      button:hover { background: #efebe9; }
+      button.active { background: #6d4c41; color: #fff; border-color: #6d4c41; }
+
+      #map { 
+        position: absolute;
+        width: 100vw; 
+        height: 100vh; 
+        z-index: 1;
+      }
+      #loading {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: var(--bg); display: flex; justify-content: center;
+        align-items: center; flex-direction: column; z-index: 999;
+      }
+    </style>
+  </head>
+  <body>
+
+    <div id="map"></div>
+
+    <header>
+      <h1>🐻 3Dｸﾏﾁﾔﾝ目撃マップ</h1>
+      <div class="legend" id="legendArea">
+        🖱️ マウスで操作
+      </div>
+    </header>
+    
+    <div id="loading">
+      <h2>地図データを展開中...</h2>
+      <p>※数秒かかる場合があります</p>
+    </div>
+    
+    <div class="controls" id="yearButtons"></div>
+
+    <script>
+      // サーバーからBase64データを受け取る
+      const mapDataBase64 = "<?= mapData ?>";
+      let japanMapData = null;
+
+      // Base64デコード処理（日本語文字化け対策込み）
+      function decodeBase64(str) {
+        try {
+          const binaryString = atob(str);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          return new TextDecoder('utf-8').decode(bytes);
+        } catch (e) {
+          console.error("Decode failed", e);
+          return null;
+        }
+      }
+
+      // 地図データの復元（GAS未展開時は後でフォールバックfetch）
+      if (mapDataBase64 && !mapDataBase64.includes("<?")) {
+        try {
+          const jsonStr = decodeBase64(mapDataBase64);
+          if (jsonStr) japanMapData = JSON.parse(jsonStr);
+        } catch (e) {
+          console.warn("Base64展開に失敗。フォールバックを試みます。", e);
+        }
+      }
+
+      // --- 設定データ ---
+      // 年ごとの色定義（パステルカラーで区別）
+      const yearColors = {
+        "2021": "#4fc3f7", // 水色
+        "2022": "#81c784", // 緑
+        "2023": "#fff176", // 黄色
+        "2024": "#ffb74d", // オレンジ
+        "2025": "#e57373"  // 赤
+      };
+
+      const prefCoords = {
+        "北海道": [142.7, 43.4], "青森": [140.7, 40.8], "岩手": [141.15, 39.7], "宮城": [140.87, 38.26], "秋田": [140.1, 39.7],
+        "山形": [140.36, 38.24], "福島": [140.47, 37.75], "茨城": [140.4, 36.34], "栃木": [139.88, 36.56], "群馬": [139.06, 36.39],
+        "埼玉": [139.63, 35.85], "千葉": [140.12, 35.6], "東京": [139.69, 35.68], "神奈川": [139.64, 35.44], "新潟": [139.02, 37.9],
+        "富山": [137.21, 36.69], "石川": [136.65, 36.59], "福井": [136.22, 36.06], "山梨": [138.56, 35.66], "長野": [138.18, 36.65],
+        "岐阜": [136.72, 35.39], "静岡": [138.38, 34.97], "愛知": [136.9, 35.18], "三重": [136.5, 34.73], "滋賀": [135.86, 35.0],
+        "京都": [135.75, 35.02], "大阪": [135.5, 34.68], "兵庫": [135.18, 34.69], "奈良": [135.83, 34.68], "和歌山": [135.16, 34.22],
+        "鳥取": [134.23, 35.5], "島根": [133.05, 35.47], "岡山": [133.93, 34.66], "広島": [132.45, 34.39], "山口": [131.47, 34.18],
+        "徳島": [134.55, 34.06], "香川": [134.04, 34.34], "愛媛": [132.76, 33.84], "高知": [133.53, 33.55], "福岡": [130.41, 33.6],
+        "佐賀": [130.29, 33.24], "長崎": [129.87, 32.74], "熊本": [130.74, 32.78], "大分": [131.61, 33.23], "宮崎": [131.42, 31.91],
+        "鹿児島": [130.55, 31.56], "沖縄": [127.68, 26.21]
+      };
+
+      const bearDataRaw = {
+        "2021": [["北海道",0],["青森",151],["岩手",1169],["宮城",331],["秋田",274],["山形",113],["福島",129],["茨城",0],["栃木",21],["群馬",196],["埼玉",16],["千葉",0],["東京",15],["神奈川",26],["新潟",286],["富山",77],["石川",119],["福井",175],["山梨",68],["長野",304],["岐阜",105],["静岡",37],["愛知",3],["三重",3],["滋賀",25],["京都",236],["大阪",2],["兵庫",112],["奈良",4],["和歌山",24],["鳥取",33],["島根",231],["岡山",33],["広島",177],["山口",66]],
+        "2022": [["北海道",0],["青森",152],["岩手",1051],["宮城",237],["秋田",383],["山形",187],["福島",190],["茨城",0],["栃木",13],["群馬",170],["埼玉",24],["千葉",0],["東京",27],["神奈川",16],["新潟",262],["富山",99],["石川",149],["福井",167],["山梨",48],["長野",200],["岐阜",94],["静岡",10],["愛知",1],["三重",6],["滋賀",15],["京都",214],["大阪",5],["兵庫",97],["奈良",18],["和歌山",21],["鳥取",40],["島根",235],["岡山",30],["広島",135],["山口",80]],
+        "2023": [["北海道",0],["青森",247],["岩手",1642],["宮城",253],["秋田",384],["山形",244],["福島",216],["茨城",0],["栃木",50],["群馬",224],["埼玉",28],["千葉",0],["東京",22],["神奈川",12],["新潟",270],["富山",98],["石川",74],["福井",146],["山梨",43],["長野",381],["岐阜",226],["静岡",18],["愛知",8],["三重",6],["滋賀",34],["京都",267],["大阪",1],["兵庫",149],["奈良",18],["和歌山",8],["鳥取",33],["島根",321],["岡山",24],["広島",145],["山口",98]],
+        "2024": [["北海道",0],["青森",314],["岩手",1439],["宮城",322],["秋田",453],["山形",145],["福島",304],["茨城",0],["栃木",118],["群馬",335],["埼玉",25],["千葉",0],["東京",80],["神奈川",36],["新潟",356],["富山",127],["石川",135],["福井",410],["山梨",116],["長野",474],["岐阜",314],["静岡",49],["愛知",7],["三重",38],["滋賀",41],["京都",578],["大阪",3],["兵庫",231],["奈良",50],["和歌山",40],["鳥取",50],["島根",571],["岡山",33],["広島",217],["山口",184]],
+        "2025": [["北海道",0],["青森",492],["岩手",1562],["宮城",258],["秋田",1292],["山形",427],["福島",294],["茨城",1],["栃木",59],["群馬",177],["埼玉",40],["千葉",0],["東京",18],["神奈川",25],["新潟",592],["富山",90],["石川",137],["福井",266],["山梨",112],["長野",344],["岐阜",267],["静岡",21],["愛知",4],["三重",24],["滋賀",64],["京都",299],["大阪",2],["兵庫",209],["奈良",56],["和歌山",19],["鳥取",18],["島根",259],["岡山",16],["広島",141],["山口",66]]
+      };
+
+      let map;
+      let threeContainer;
+
+      async function boot() {
+        const loadingEl = document.getElementById('loading');
+        const titleEl = loadingEl.querySelector('h2');
+
+        // ステップ1: Base64データがあるか確認
+        if (!japanMapData && mapDataBase64 && !mapDataBase64.includes("<?")) {
+          if (titleEl) titleEl.textContent = 'サーバーからデータを復元中...';
+          const jsonStr = decodeBase64(mapDataBase64);
+          if (jsonStr) {
+            try {
+              japanMapData = JSON.parse(jsonStr);
+              console.log('✅ Base64データから復元成功');
+            } catch (e) {
+              console.warn('Base64データの解析に失敗:', e);
+              japanMapData = null;
+            }
+          }
+        }
+
+        // ステップ2: データがなければ CDN から取得
+        if (!japanMapData) {
+          try {
+            if (titleEl) titleEl.textContent = '地図データを読み込み中...';
+
+            const candidates = [
+              'https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson',
+              'https://unpkg.com/geojson-japan@0.2.0/japan.geo.json',
+              'https://cdn.jsdelivr.net/npm/geojson-japan@0.2.0/japan.geo.json'
+            ];
+
+            async function tryFetch(url) {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 20000);
+              
+              try {
+                const res = await fetch(url, { 
+                  cache: 'default',
+                  mode: 'cors',
+                  signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                
+                // データ妥当性チェック
+                if (!data.features || data.features.length === 0) {
+                  throw new Error('GeoJSON に features がありません');
+                }
+                
+                const hasCoordinates = data.features.some(f => 
+                  f.geometry && f.geometry.coordinates && 
+                  JSON.stringify(f.geometry.coordinates).length > 100
+                );
+                if (!hasCoordinates) {
+                  throw new Error('座標データが見つかりません');
+                }
+                
+                console.log('✅ ' + url + ' から取得成功:', data.features.length + ' features');
+                return data;
+              } catch (e) {
+                clearTimeout(timeoutId);
+                throw e;
+              }
+            }
+
+            let lastErr;
+            for (const url of candidates) {
+              try {
+                const displayUrl = url.split('/').pop();
+                if (titleEl) titleEl.textContent = `取得中: ${displayUrl}`;
+                console.log('📥 試行:', displayUrl);
+                
+                japanMapData = await tryFetch(url);
+                break;
+              } catch (e) {
+                console.warn('❌ 失敗:', url, e.message);
+                lastErr = e;
+              }
+            }
+            
+            if (!japanMapData) {
+              throw lastErr || new Error('すべてのソースから取得できませんでした');
+            }
+          } catch (e) {
+            console.error('❌ エラー:', e.message);
+            loadingEl.innerHTML = `
+              <h2>⚠️ 地図の読み込みに失敗</h2>
+              <p>${e.message}</p>
+              <p style="font-size:12px; color:#999;">
+                インターネット接続を確認のうえ、<br>
+                ブラウザを再読み込み (Ctrl+F5) してください
+              </p>
+            `;
+            return;
+          }
+        }
+
+        // ステップ3: ECharts に登録して表示
+        try {
+          if (titleEl) titleEl.textContent = '地図を初期化中...';
+          console.log('🗺️ MapLibre GL を初期化中...');
+          
+          initMap();
+          initChart();
+        } catch (e) {
+          console.error('❌ 初期化エラー:', e);
+          loadingEl.innerHTML = 
+            "⚠️ 地図の初期化に失敗しました。<br><small>" + e.message + "</small>";
+        }
+      }
+
+      function initMap() {
+        map = new maplibregl.Map({
+          container: 'map',
+          style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+          center: [138, 37],
+          zoom: 4.5,
+          pitch: 45,
+          bearing: 0,
+          antialias: true
+        });
+        
+        map.on('load', () => {
+          console.log('✅ MapLibre GL ロード完了');
+          addDataLayer();
+        });
+      }
+
+      function addDataLayer() {
+        const currentYear = "All";
+        const data = getStackedSeries(currentYear);
+        
+        // GeoJSON フィーチャーコレクションを作成（Polygon）
+        const features = data.map(series => {
+          return series.data.map(item => {
+            const [lng, lat] = [item.value[0], item.value[1]];
+            const height = item.value[3] * 5000;  // 高さを5000倍に拡大
+            // 年に応じて少しずつ細くする（2021年を基準に年が進むごとに細くする）
+            let size = 0.12;
+            const yearNum = parseInt(series.name);
+            if (!isNaN(yearNum)) {
+              // 年差に応じて幅を減らす。1年あたり 0.015 を減少（例: 2021→0.12, 2025→0.06）
+              size = Math.max(0.02, 0.12 - (yearNum - 2021) * 0.015);
+            }
+            // 座標を中心とした正方形 Polygon を作成
+            const coords = [
+              [lng - size, lat - size],
+              [lng + size, lat - size],
+              [lng + size, lat + size],
+              [lng - size, lat + size],
+              [lng - size, lat - size]
+            ];
+            
+            return {
+              type: 'Feature',
+              properties: {
+                name: item.name,
+                value: item.value[2],
+                height: height,
+                year: series.name,
+                color: series.itemStyle.color
+              },
+              geometry: {
+                type: 'Polygon',
+                coordinates: [coords]
+              }
+            };
+          });
+        }).flat();
+
+        const geojson = {
+          type: 'FeatureCollection',
+          features: features
+        };
+
+        // ソースとレイヤーを追加
+        if (!map.getSource('bear-data')) {
+          map.addSource('bear-data', {
+            type: 'geojson',
+            data: geojson
+          });
+
+          // Fill Extrusion レイヤーで円柱状に表示
+          map.addLayer({
+            id: 'bear-3d',
+            type: 'fill-extrusion',
+            source: 'bear-data',
+            paint: {
+              'fill-extrusion-color': ['get', 'color'],
+              'fill-extrusion-height': ['get', 'height'],
+              'fill-extrusion-base': 0,
+              'fill-extrusion-opacity': 0.8
+            }
+          });
+
+          // ホバー時のインタラクション
+          map.on('mousemove', 'bear-3d', (e) => {
+            map.getCanvas().style.cursor = 'pointer';
+            const props = e.features[0].properties;
+            document.getElementById('legendArea').innerHTML = `
+              <strong>${props.name}</strong><br>
+              ${props.year}年: ${props.value} 件
+            `;
+          });
+
+          map.on('mouseleave', 'bear-3d', () => {
+            map.getCanvas().style.cursor = '';
+            updateLegend("All");
+          });
+        } else {
+          // 既に存在する場合はデータを更新
+          map.getSource('bear-data').setData(geojson);
+        }
+      }
+
+      function updateLegend(year) {
+        const legendDiv = document.getElementById('legendArea');
+        if (year === "All") {
+          legendDiv.innerHTML = `
+            <span style="font-weight:bold; margin-right:10px;">積み上げ表示:</span>
+            <div class="legend-item"><div class="color-box" style="background:${yearColors['2025']}"></div>2025</div>
+            <div class="legend-item"><div class="color-box" style="background:${yearColors['2024']}"></div>2024</div>
+            <div class="legend-item"><div class="color-box" style="background:${yearColors['2023']}"></div>2023</div>
+            <div class="legend-item"><div class="color-box" style="background:${yearColors['2022']}"></div>2022</div>
+            <div class="legend-item"><div class="color-box" style="background:${yearColors['2021']}"></div>2021</div>
+          `;
+        }
+      }
+
+      function initChart() {
+        document.getElementById('loading').style.display = 'none';
+
+        const years = ["All", "2021", "2022", "2023", "2024", "2025"];
+        const controlsDiv = document.getElementById('yearButtons');
+        
+        years.forEach(year => {
+          const btn = document.createElement('button');
+          btn.innerText = year === "All" ? "合計" : year + "年";
+          btn.onclick = () => updateYear(year, btn);
+          if (year === "All") btn.classList.add('active');
+          controlsDiv.appendChild(btn);
+        });
+
+        updateLegend("All");
+      }
+
+      function updateYear(year, btnElement) {
+        document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btnElement.classList.add('active');
+        updateLegend(year);
+        
+        // レイヤーを更新
+        const data = getStackedSeries(year);
+        
+        const features = data.map(series => {
+          return series.data.map(item => {
+            const [lng, lat] = [item.value[0], item.value[1]];
+            const height = item.value[3] * 5000;  // 高さを5000倍に拡大
+            // 年に応じて少しずつ細くする
+            let size = 0.12;
+            const yearNum = parseInt(series.name);
+            if (!isNaN(yearNum)) {
+              size = Math.max(0.02, 0.12 - (yearNum - 2021) * 0.015);
+            }
+            
+            const coords = [
+              [lng - size, lat - size],
+              [lng + size, lat - size],
+              [lng + size, lat + size],
+              [lng - size, lat + size],
+              [lng - size, lat - size]
+            ];
+            
+            return {
+              type: 'Feature',
+              properties: {
+                name: item.name,
+                value: item.value[2],
+                height: height,
+                year: series.name,
+                color: series.itemStyle.color
+              },
+              geometry: {
+                type: 'Polygon',
+                coordinates: [coords]
+              }
+            };
+          });
+        }).flat();
+
+        const geojson = {
+          type: 'FeatureCollection',
+          features: features
+        };
+
+        // ソースのデータを更新
+        if (map.getSource('bear-data')) {
+          map.getSource('bear-data').setData(geojson);
+        }
+      }
+
+      // データの変換ロジック
+      function getStackedSeries(targetYear) {
+        const years = ["2021", "2022", "2023", "2024", "2025"];
+        let seriesList = [];
+        
+        if (targetYear !== "All") {
+          const data = convertSingleYear(targetYear);
+          seriesList.push(createBarSeries(data, yearColors[targetYear] || '#d32f2f', targetYear));
+        } else {
+          let prefTotals = {};
+          
+          years.forEach(y => {
+            bearDataRaw[y].forEach(item => {
+              const [pref, val] = item;
+              if(!prefTotals[pref]) prefTotals[pref] = {};
+              prefTotals[pref][y] = val;
+            });
+          });
+
+          let accum = {};
+          let stackedData = [];
+          for (let i = 0; i < years.length; i++) {
+            const y = years[i];
+            stackedData.push({ year: y, data: [] });
+            
+            Object.keys(prefCoords).forEach(pref => {
+               const val = prefTotals[pref] ? (prefTotals[pref][y] || 0) : 0;
+               if (!accum[pref]) accum[pref] = 0;
+               accum[pref] += val;
+               
+               if (accum[pref] > 0) {
+                 const coord = prefCoords[pref];
+                 const height = Math.sqrt(accum[pref]) * 1.5;
+                 stackedData[i].data.push({
+                   name: pref,
+                   value: [coord[0], coord[1], accum[pref], height],
+                   originalVal: val
+                 });
+               }
+            });
+          }
+
+          for (let i = years.length - 1; i >= 0; i--) {
+            const y = years[i];
+            const sData = stackedData[i].data;
+            seriesList.push(createBarSeries(sData, yearColors[y], y));
+          }
+        }
+        return seriesList;
+      }
+
+      function convertSingleYear(year) {
+        const raw = bearDataRaw[year];
+        const res = [];
+        raw.forEach(item => {
+          const [name, value] = item;
+          const coord = prefCoords[name];
+          if (coord && value > 0) {
+            const height = Math.sqrt(value) * 1.5;
+            res.push({
+              name: name,
+              value: [coord[0], coord[1], value, height]
+            });
+          }
+        });
+        return res;
+      }
+
+      function createBarSeries(data, color, seriesName) {
+        return {
+          data: data,
+          itemStyle: { color: color },
+          name: seriesName
+        };
+      }
+
+      window.onload = boot;
+    </script>
+  </body>
+</html>
